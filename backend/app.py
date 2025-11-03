@@ -6,6 +6,10 @@ from mysql.connector import Error as MySQLError
 from datetime import datetime
 import logging
 from decimal import Decimal, InvalidOperation
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -138,18 +142,18 @@ def add_expense():
             return jsonify({'error': 'Amount must be a positive number'}), 400
         
         # Validate string length
-        if len(data['receiver']) > 100:
-            return jsonify({'error': 'Receiver name too long (max 100 characters)'}), 400
-        if len(data['project']) > 100:
-            return jsonify({'error': 'Project name too long (max 100 characters)'}), 400
-        if len(data['type']) > 50:
-            return jsonify({'error': 'Type too long (max 50 characters)'}), 400
-        if len(data['pay_method']) > 50:
-            return jsonify({'error': 'Payment method too long (max 50 characters)'}), 400
+        if not isinstance(data['receiver'], str) or len(data['receiver']) > 100:
+            return jsonify({'error': 'Receiver name must be a string (max 100 characters)'}), 400
+        if not isinstance(data['project'], str) or len(data['project']) > 100:
+            return jsonify({'error': 'Project name must be a string (max 100 characters)'}), 400
+        if not isinstance(data['type'], str) or len(data['type']) > 50:
+            return jsonify({'error': 'Type must be a string (max 50 characters)'}), 400
+        if not isinstance(data['pay_method'], str) or len(data['pay_method']) > 50:
+            return jsonify({'error': 'Payment method must be a string (max 50 characters)'}), 400
         
         note = data.get('note', '')
-        if len(note) > 1000:
-            return jsonify({'error': 'Note too long (max 1000 characters)'}), 400
+        if not isinstance(note, str) or len(note) > 1000:
+            return jsonify({'error': 'Note must be a string (max 1000 characters)'}), 400
         
         sql = ("INSERT INTO expenses(date, receiver, amount, project, type, pay_method, note) "
                "VALUES(%s,%s,%s,%s,%s,%s,%s)")
