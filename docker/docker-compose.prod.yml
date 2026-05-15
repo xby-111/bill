@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  # 数据库服务：PostgreSQL
+  db:
+    image: postgres:15-alpine
+    container_name: bill_db_prod
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-ComplexPass123!}  # 请修改此密码！
+      POSTGRES_DB: ${DB_NAME:-family_ledger}
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M  # 限制内存，适合低配云服务器
+
+  # 后端应用服务
+  api:
+    build: .
+    container_name: bill_api_prod
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      DB_TYPE: postgresql
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-ComplexPass123!}
+      DB_NAME: ${DB_NAME:-family_ledger}
+      SECRET_KEY: ${SECRET_KEY:-ChangeThisToARealSecretInProduction}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      # 生产环境配置
+      DEBUG: "false"
+      TOKEN_EXPIRE_MINUTES: 10080  # Token 有效期 7 天，减少手机端重复登录
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+volumes:
+  postgres_data_prod:
+    driver: local

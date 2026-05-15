@@ -34,3 +34,12 @@ Thumbs.db
 
 # 日志
 *.log
+
+# Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# 压缩包
+*.zip
+

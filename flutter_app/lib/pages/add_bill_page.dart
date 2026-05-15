@@ -1,11 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:provider/provider.dart';
+import 'dart:convert';
+import 'dart:async';
 import '../models/bill.dart';
+import '../models/project.dart';
 import '../services/api_service.dart';
+import '../services/auth_provider.dart';
+import 'project_list_page.dart';
 
 class AddBillPage extends StatefulWidget {
-  const AddBillPage({super.key});
+  final Bill? editBill; // 传入此参数即为编辑模式
+  final int? defaultProjectId; // 默认选中的项目ID
+
+  const AddBillPage({super.key, this.editBill, this.defaultProjectId});
 
   @override
   State<AddBillPage> createState() => _AddBillPageState();
@@ -13,61 +22,264 @@ class AddBillPage extends StatefulWidget {
 
 class _AddBillPageState extends State<AddBillPage> {
   final _amountCtrl = TextEditingController();
-  final _categoryCtrl = TextEditingController(text: '人工');
+  final _nameCtrl = TextEditingController(); // 姓名输入
   final _noteCtrl = TextEditingController();
-  final _payMethodCtrl = TextEditingController(text: '现金');
+  final _customPayMethodCtrl = TextEditingController(); // 自定义支付方式
   final _hourlyRateCtrl = TextEditingController();
-  final _speech = stt.SpeechToText();
+  final _durationCtrl = TextEditingController(); // 工时输入控制器
 
   DateTime _date = DateTime.now();
   String _billType = 'expense';
-  String? _selectedWorker;
-  String? _customWorker;
-  double _duration = 0;
   bool _submitting = false;
-  String _speechStatus = '未开启';
+  bool _hasSubmitted = false; // 标记是否已成功提交，防止dispose时重新保存草稿
   bool _amountManuallyEdited = false;
   bool _isUpdatingAmountProgrammatically = false;
   String? _calcExplanation;
+  Timer? _draftDebounce;
+  Timer? _timeUpdateTimer; // 时间自动更新定时器
 
-  final _workers = ['张师傅', '李阿姨', '王叔叔'];
+  // 支付方式选项
+  static const List<String> _payMethods = ['现金', '微信', '支付宝', '银行卡', '其他'];
+  String _selectedPayMethod = '现金';
+
+  // 项目相关
+  List<Project> _projects = [];
+  int? _selectedProjectId;
+  bool _loadingProjects = true;
+
+  bool get _isEditing => widget.editBill != null;
+
+  // 获取工时值
+  double get _duration {
+    final text = _durationCtrl.text.trim();
+    if (text.isEmpty) return 0;
+    return double.tryParse(text) ?? 0;
+  }
 
   @override
   void initState() {
     super.initState();
-    _amountCtrl.addListener(_handleAmountInputChange);
+    _amountCtrl.addListener(_onFieldChange);
+    _nameCtrl.addListener(_onFieldChange);
+    _noteCtrl.addListener(_onFieldChange);
+    _customPayMethodCtrl.addListener(_onFieldChange);
+    _durationCtrl.addListener(_handleDurationChange); // 工时变化监听
     _hourlyRateCtrl.addListener(_handleHourlyRateChange);
+
+    // 新增模式自动同步当前时间
+    if (!_isEditing) {
+      _timeUpdateTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+        if (mounted) {
+          setState(() => _date = DateTime.now());
+        }
+      });
+    }
+
+    _loadProjects();
+
+    if (_isEditing) {
+      _initEditData();
+    } else {
+      _selectedProjectId = widget.defaultProjectId;
+      _loadDraft(); // 仅新增模式加载草稿
+    }
+  }
+
+  Future<void> _loadProjects() async {
+    try {
+      final projects = await apiService.getProjects();
+      if (mounted) {
+        setState(() {
+          _projects = projects;
+          _loadingProjects = false;
+          // 如果没有选中项目且只有一个项目，默认选中
+          if (_selectedProjectId == null && projects.length == 1) {
+            _selectedProjectId = projects.first.id;
+          }
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _loadingProjects = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('加载项目失败: $e')),
+        );
+      }
+    }
+  }
+
+  void _initEditData() {
+    final b = widget.editBill!;
+    _amountCtrl.text = b.amount.toString();
+    _billType = b.billType;
+    _date = b.date;
+    _noteCtrl.text = b.note ?? '';
+    _selectedProjectId = b.projectId;
+
+    // 支付方式
+    final payMethod = b.payMethod ?? '现金';
+    if (_payMethods.contains(payMethod)) {
+      _selectedPayMethod = payMethod;
+    } else {
+      _selectedPayMethod = '其他';
+      _customPayMethodCtrl.text = payMethod;
+    }
+
+    // 姓名直接设置
+    _nameCtrl.text = b.name ?? '';
+
+    // 工时设置
+    if (b.durationHours != null && b.durationHours! > 0) {
+      _durationCtrl.text = b.durationHours.toString();
+    }
+    if (b.hourlyRate != null) {
+      _hourlyRateCtrl.text = b.hourlyRate.toString();
+    }
   }
 
   @override
   void dispose() {
-    _amountCtrl.removeListener(_handleAmountInputChange);
+    // 页面关闭前，强制立即保存一次草稿(仅新增模式且未成功提交)
+    if (!_isEditing && !_hasSubmitted) _saveDraft(immediate: true);
+
+    _draftDebounce?.cancel();
+    _timeUpdateTimer?.cancel(); // 取消时间定时器
+    _amountCtrl.removeListener(_onFieldChange);
+    _nameCtrl.removeListener(_onFieldChange);
+    _noteCtrl.removeListener(_onFieldChange);
+    _customPayMethodCtrl.removeListener(_onFieldChange);
+    _durationCtrl.removeListener(_handleDurationChange);
     _hourlyRateCtrl.removeListener(_handleHourlyRateChange);
+
     _amountCtrl.dispose();
-    _categoryCtrl.dispose();
+    _nameCtrl.dispose();
     _noteCtrl.dispose();
-    _payMethodCtrl.dispose();
+    _customPayMethodCtrl.dispose();
+    _durationCtrl.dispose();
     _hourlyRateCtrl.dispose();
     super.dispose();
   }
 
-  void _handleAmountInputChange() {
-    if (_isUpdatingAmountProgrammatically) return;
-    if (!_amountManuallyEdited && _amountCtrl.text.isNotEmpty) {
-      setState(() {
-        _amountManuallyEdited = true;
-        _calcExplanation = null;
-      });
+  void _onFieldChange() {
+    if (_amountCtrl == _hourlyRateCtrl) return;
+    if (_amountCtrl.text.isNotEmpty && !_isUpdatingAmountProgrammatically) {
+      if (!_amountManuallyEdited) {
+        setState(() {
+          _amountManuallyEdited = true;
+          _calcExplanation = null;
+        });
+      }
     }
+    if (!_isEditing) _saveDraft();
+  }
+
+  void _handleDurationChange() {
+    _maybeRecalculateAmount();
+    if (!_isEditing) _saveDraft();
   }
 
   void _handleHourlyRateChange() {
     if (_hourlyRateCtrl.text.trim().isEmpty) {
       setState(() => _calcExplanation = null);
-      return;
+    } else {
+      _maybeRecalculateAmount();
     }
-    _maybeRecalculateAmount();
+    if (!_isEditing) _saveDraft();
   }
+
+  // ==================== 草稿功能 (仅新增) ====================
+
+  static const String _draftKey = 'bill_draft';
+
+  Future<void> _saveDraft({bool immediate = false}) async {
+    if (_isEditing) return; // 编辑模式不存草稿
+
+    if (_draftDebounce?.isActive ?? false) _draftDebounce!.cancel();
+
+    final doSave = () async {
+      final prefs = await SharedPreferences.getInstance();
+      final draftData = {
+        'amount': _amountCtrl.text,
+        'name': _nameCtrl.text,
+        'note': _noteCtrl.text,
+        'pay_method': _selectedPayMethod,
+        'custom_pay_method': _customPayMethodCtrl.text,
+        'hourly_rate': _hourlyRateCtrl.text,
+        'duration': _durationCtrl.text,
+        'bill_type': _billType,
+        'date': _date.toUtc().toIso8601String(), // 保存为UTC时间
+        'project_id': _selectedProjectId,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      };
+      await prefs.setString(_draftKey, jsonEncode(draftData));
+    };
+
+    if (immediate) {
+      await doSave();
+    } else {
+      _draftDebounce = Timer(const Duration(milliseconds: 100), doSave);
+    }
+  }
+
+  Future<void> _loadDraft() async {
+    final prefs = await SharedPreferences.getInstance();
+    final draftString = prefs.getString(_draftKey);
+    if (draftString == null) return;
+
+    try {
+      final draft = jsonDecode(draftString) as Map<String, dynamic>;
+      
+      // 如果是从特定项目进入，且草稿属于其他项目，则不恢复
+      final draftProjectId = draft['project_id'] as int?;
+      if (widget.defaultProjectId != null && draftProjectId != widget.defaultProjectId) {
+        // 草稿是其他项目的，清除并不恢复
+        await _clearDraft();
+        return;
+      }
+      
+      final hasContent = (draft['amount']?.toString().isNotEmpty ?? false) ||
+          (draft['note']?.toString().isNotEmpty ?? false) ||
+          (draft['name']?.toString().isNotEmpty ?? false);
+
+      if (!hasContent) return;
+
+      if (!mounted) return;
+
+      setState(() {
+        _amountCtrl.text = draft['amount'] ?? '';
+        _nameCtrl.text = draft['name'] ?? '';
+        _noteCtrl.text = draft['note'] ?? '';
+        _selectedPayMethod = draft['pay_method'] ?? '现金';
+        _customPayMethodCtrl.text = draft['custom_pay_method'] ?? '';
+        _hourlyRateCtrl.text = draft['hourly_rate'] ?? '';
+        _durationCtrl.text = draft['duration']?.toString() ?? '';
+        _billType = draft['bill_type'] ?? 'expense';
+        if (draft['date'] != null) {
+          _date = DateTime.parse(draft['date']).toLocal(); // 转换为本地时间显示
+        }
+        // 仅当没有指定默认项目时才从草稿恢复项目ID
+        if (widget.defaultProjectId == null) {
+          _selectedProjectId = draftProjectId;
+        }
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('已为您恢复上次未保存的内容'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    } catch (e) {
+      _clearDraft();
+    }
+  }
+
+  Future<void> _clearDraft() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_draftKey);
+  }
+
+  // ==================== 逻辑方法 ====================
 
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
@@ -87,6 +299,7 @@ class _AddBillPageState extends State<AddBillPage> {
           _date.second,
         );
       });
+      if (!_isEditing) _saveDraft();
     }
   }
 
@@ -105,23 +318,8 @@ class _AddBillPageState extends State<AddBillPage> {
           picked.minute,
         );
       });
+      if (!_isEditing) _saveDraft();
     }
-  }
-
-  void _setDuration(double value) {
-    setState(() {
-      _duration = value;
-      if (value == 0) _calcExplanation = null;
-    });
-    _maybeRecalculateAmount();
-  }
-
-  void _incDuration(double delta) {
-    setState(() {
-      _duration = (_duration + delta).clamp(0, 24);
-      if (_duration == 0) _calcExplanation = null;
-    });
-    _maybeRecalculateAmount();
   }
 
   void _maybeRecalculateAmount({bool force = false}) {
@@ -130,7 +328,8 @@ class _AddBillPageState extends State<AddBillPage> {
     if (_amountManuallyEdited && !force) return;
 
     final computed = rate * _duration;
-    final explanation = '${rate.toStringAsFixed(2)}元/h × ${_duration.toStringAsFixed(2)}h';
+    final explanation =
+        '${rate.toStringAsFixed(2)}元/h × ${_duration.toStringAsFixed(2)}h';
 
     _isUpdatingAmountProgrammatically = true;
     _amountCtrl.text = computed.toStringAsFixed(2);
@@ -147,10 +346,27 @@ class _AddBillPageState extends State<AddBillPage> {
       return;
     }
 
+    if (_selectedProjectId == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('请选择所属项目')));
+      return;
+    }
+
     final hourlyRate = double.tryParse(_hourlyRateCtrl.text.trim());
-    final worker = _customWorker?.trim().isNotEmpty == true
-        ? _customWorker!.trim()
-        : _selectedWorker;
+
+    // 获取姓名，如果为空则使用默认值
+    final billName =
+        _nameCtrl.text.trim().isNotEmpty ? _nameCtrl.text.trim() : '未命名';
+
+    // 分类固定为"人工"
+    const category = '人工';
+
+    // 获取支付方式
+    final payMethod = _selectedPayMethod == '其他'
+        ? (_customPayMethodCtrl.text.trim().isNotEmpty
+            ? _customPayMethodCtrl.text.trim()
+            : '其他')
+        : _selectedPayMethod;
 
     String? note = _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim();
     if (_calcExplanation != null) {
@@ -164,234 +380,77 @@ class _AddBillPageState extends State<AddBillPage> {
 
     setState(() => _submitting = true);
     try {
-      final bill = Bill(
-        amount: double.parse(_amountCtrl.text.trim()),
-        billType: _billType,
-        category: _categoryCtrl.text.trim(),
-        date: _date,
-        note: note,
-        worker: worker,
-        durationHours: _duration > 0 ? _duration : null,
-        hourlyRate: hourlyRate,
-        payMethod: _payMethodCtrl.text.trim().isEmpty
-            ? null
-            : _payMethodCtrl.text.trim(),
-      );
-      await apiService.createBill(bill);
+      if (_isEditing) {
+        // 更新逻辑
+        final update = BillUpdate(
+          amount: double.parse(_amountCtrl.text.trim()),
+          billType: _billType,
+          category: category,
+          date: _date,
+          note: note,
+          name: billName,
+          durationHours: _duration > 0 ? _duration : null,
+          hourlyRate: hourlyRate,
+          payMethod: payMethod,
+          projectId: _selectedProjectId,
+        );
+        await apiService.updateBill(widget.editBill!.id!, update);
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('更新成功')));
+          Navigator.of(context).pop(true);
+        }
+      } else {
+        // 创建逻辑
+        // 确保项目ID不为空（前面已经验证过，这里是双重保障）
+        assert(_selectedProjectId != null, '项目ID不能为空');
+
+        final bill = Bill(
+          amount: double.parse(_amountCtrl.text.trim()),
+          billType: _billType,
+          category: category,
+          date: _date,
+          note: note,
+          name: billName,
+          durationHours: _duration > 0 ? _duration : null,
+          hourlyRate: hourlyRate,
+          payMethod: payMethod,
+          projectId: _selectedProjectId!, // 使用! 因为已经验证过
+        );
+        await apiService.createBill(bill);
+        await _clearDraft();
+        _hasSubmitted = true; // 标记已成功提交，防止dispose时重新保存草稿
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('保存成功')));
+          Navigator.of(context).pop(true);
+        }
+      }
+    } on ApiException catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('保存成功')));
-        Navigator.of(context).pop(true);
+            .showSnackBar(SnackBar(content: Text('操作失败：${e.message}')));
+
+        // 如果是认证错误，提示用户重新登录
+        if (e.requiresReauth) {
+          await apiService.clearToken();
+          if (mounted) {
+            await Provider.of<AuthProvider>(context, listen: false).logout();
+          }
+        }
       }
     } catch (e) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('保存失败：$e')));
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('操作失败：$e')));
+      }
     } finally {
       if (mounted) setState(() => _submitting = false);
     }
   }
 
-  Future<void> _startSpeech() async {
-    final available = await _speech.initialize(
-      onStatus: (status) => setState(() => _speechStatus = status),
-      onError: (err) => ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('语音错误：${err.errorMsg}')),
-      ),
-    );
-    if (!available) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('语音识别不可用')));
-      return;
-    }
-    _speech.listen(onResult: (result) {
-      if (result.finalResult) _handleSpeech(result.recognizedWords);
-    });
-  }
-
-  void _stopSpeech() {
-    _speech.stop();
-    setState(() => _speechStatus = '停止');
-  }
-
-  void _handleSpeech(String text) {
-    final cleaned = text.trim();
-    if (cleaned.isEmpty) return;
-
-    final result = _parseSpeechText(cleaned);
-
-    setState(() {
-      if (result.worker != null) {
-        _selectedWorker = result.worker;
-        _customWorker = null;
-      }
-      if (result.durationHours != null) {
-        _duration = result.durationHours!.clamp(0, 24);
-      }
-      if (result.startDateTime != null) {
-        _date = result.startDateTime!;
-      }
-    });
-
-    if (result.hourlyRate != null) {
-      _hourlyRateCtrl.text = _formatNumber(result.hourlyRate!);
-    }
-
-    if (result.amount != null) {
-      _isUpdatingAmountProgrammatically = true;
-      _amountCtrl.text = _formatNumber(result.amount!);
-      _isUpdatingAmountProgrammatically = false;
-      _amountManuallyEdited = false;
-      setState(() => _calcExplanation = null);
-    } else if (result.hourlyRate != null && result.durationHours != null) {
-      _maybeRecalculateAmount(force: true);
-    }
-
-    _appendSpeechNote(cleaned);
-  }
-
-  void _appendSpeechNote(String rawText) {
-    final voiceLine = '[语音原文] $rawText';
-    final existing = _noteCtrl.text.trim();
-    if (existing.contains(voiceLine)) return;
-    final updated = [existing, voiceLine].where((e) => e.isNotEmpty).join('\n');
-    _noteCtrl.text = updated;
-  }
-
-  _SpeechParseResult _parseSpeechText(String raw) {
-    final normalized = raw.replaceAll('：', ':');
-    final worker = _detectWorker(normalized);
-    final duration = _detectDuration(normalized, currentDuration: _duration);
-    final timeResult = _detectStartTime(normalized);
-    final rateResult = _detectHourlyRate(normalized);
-    final amount = _detectAmount(
-      normalized,
-      exclude: rateResult?.matchedRaw,
-    );
-
-    return _SpeechParseResult(
-      worker: worker,
-      durationHours: duration,
-      hourlyRate: rateResult?.value,
-      amount: amount,
-      startDateTime: timeResult,
-    );
-  }
-
-  String? _detectWorker(String text) {
-    for (final w in _workers) {
-      if (text.contains(w)) return w;
-    }
-    final fallback = RegExp(r'([\u4e00-\u9fa5]{1,4})(师傅|阿姨|叔叔|大哥|大姐|老师)');
-    final match = fallback.firstMatch(text);
-    if (match != null) {
-      return match.group(0);
-    }
-    return null;
-  }
-
-  double? _detectDuration(String text, {double currentDuration = 0}) {
-    if (text.contains('半工') || text.contains('半天')) return 4;
-    if (text.contains('大工') || text.contains('整天')) return 8;
-
-    final complex = RegExp(r'(\d+)(?:个)?半小?时').firstMatch(text);
-    if (complex != null) {
-      return double.parse(complex.group(1)!) + 0.5;
-    }
-
-    final regex = RegExp(r'(\d+(?:\.\d+)?)\s*(?:个)?小?时');
-    final match = regex.firstMatch(text);
-    if (match != null) {
-      return double.tryParse(match.group(1)!);
-    }
-
-    if (text.contains('加班')) {
-      final extraMatch = RegExp(r'加班(?:了)?(\d+(?:\.\d+)?)?').firstMatch(text);
-      if (extraMatch != null && extraMatch.group(1) != null) {
-        final inc = double.tryParse(extraMatch.group(1)!);
-        if (inc != null) return currentDuration + inc;
-      }
-      return (currentDuration + 1).clamp(0, 24);
-    }
-
-    return null;
-  }
-
-  _RateParseResult? _detectHourlyRate(String text) {
-    final patterns = [
-      RegExp(r'每(?:个)?(?:小?时|小时|工时)[^\d]{0,4}(\d+(?:\.\d+)?)'),
-      RegExp(r'(\d+(?:\.\d+)?)\s*(?:块钱|块|元)?\s*(?:一个|每个|每)?(?:小?时|小时|工时)'),
-    ];
-
-    for (final pattern in patterns) {
-      final match = pattern.firstMatch(text);
-      if (match != null) {
-        final value = double.tryParse(match.group(1)!);
-        if (value != null) {
-          return _RateParseResult(value: value, matchedRaw: match.group(0)!);
-        }
-      }
-    }
-    return null;
-  }
-
-  double? _detectAmount(String text, {String? exclude}) {
-    var source = text;
-    if (exclude != null) {
-      source = source.replaceFirst(exclude, '');
-    }
-    final regex = RegExp(r'(\d+(?:\.\d+)?)\s*(?:块钱|块|元|人民币)');
-    final match = regex.firstMatch(source);
-    if (match != null) {
-      return double.tryParse(match.group(1)!);
-    }
-    return null;
-  }
-
-  DateTime? _detectStartTime(String text) {
-    final base = _date;
-    final generic = RegExp(
-      r'(上午|早上|清晨|中午|下午|傍晚|晚上|凌晨)?\s*(\d{1,2})(?:[::](\d{1,2}))',
-    );
-    final dotMatch = generic.firstMatch(text);
-    if (dotMatch != null) {
-      final qualifier = dotMatch.group(1);
-      final hour = int.parse(dotMatch.group(2)!);
-      final minute = int.parse(dotMatch.group(3)!);
-      final mappedHour = _mapHourWithQualifier(hour, qualifier);
-      return DateTime(base.year, base.month, base.day, mappedHour, minute);
-    }
-
-    final hourRegex = RegExp(
-      r'(上午|早上|清晨|中午|下午|傍晚|晚上|凌晨)?\s*(\d{1,2})点(半)?',
-    );
-    final hourMatch = hourRegex.firstMatch(text);
-    if (hourMatch != null) {
-      final qualifier = hourMatch.group(1);
-      final hour = int.parse(hourMatch.group(2)!);
-      final minute = hourMatch.group(3) != null ? 30 : 0;
-      final mappedHour = _mapHourWithQualifier(hour, qualifier);
-      return DateTime(base.year, base.month, base.day, mappedHour, minute);
-    }
-
-    return null;
-  }
-
-  int _mapHourWithQualifier(int hour, String? qualifier) {
-    var h = hour % 24;
-    final q = qualifier ?? '';
-    if (q.contains('下午') || q.contains('晚上') || q.contains('傍晚')) {
-      if (h < 12) h += 12;
-    } else if (q.contains('中午')) {
-      if (h >= 1 && h <= 5) h += 12;
-    } else if (q.contains('凌晨')) {
-      if (h == 12) h = 0;
-    }
-    return h;
-  }
-
-  String _formatNumber(double value) {
-    return value % 1 == 0 ? value.toStringAsFixed(0) : value.toStringAsFixed(2);
-  }
+  String _formatNumber(double value) =>
+      value % 1 == 0 ? value.toStringAsFixed(0) : value.toStringAsFixed(2);
 
   @override
   Widget build(BuildContext context) {
@@ -399,7 +458,7 @@ class _AddBillPageState extends State<AddBillPage> {
     final tf = DateFormat('HH:mm');
     return Scaffold(
       appBar: AppBar(
-        title: const Text('记工时'),
+        title: Text(_isEditing ? '编辑账单' : '记工时'),
         actions: [
           IconButton(
             icon: const Icon(Icons.save),
@@ -407,237 +466,301 @@ class _AddBillPageState extends State<AddBillPage> {
           )
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          ToggleButtons(
-            isSelected: [_billType == 'expense', _billType == 'income'],
-            onPressed: (index) {
-              setState(() => _billType = index == 0 ? 'expense' : 'income');
-            },
-            children: const [
-              Padding(
-                padding: EdgeInsets.symmetric(horizontal: 16),
-                child: Text('支出'),
-              ),
-              Padding(
-                padding: EdgeInsets.symmetric(horizontal: 16),
-                child: Text('收入'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _amountCtrl,
-            keyboardType:
-                const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(
-              labelText: '金额（元）',
-              prefixIcon: Icon(Icons.attach_money),
-            ),
-          ),
-          if (_calcExplanation != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Row(
-                children: [
-                  const Icon(Icons.info_outline, size: 16, color: Colors.green),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      '基于 $_calcExplanation 自动计算，可手动修改',
-                      style: const TextStyle(color: Colors.green, fontSize: 12),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          if (_duration > 0)
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: double.tryParse(_hourlyRateCtrl.text.trim()) != null
-                    ? () => _maybeRecalculateAmount(force: true)
-                    : null,
-                icon: const Icon(Icons.calculate_outlined),
-                label: const Text('根据时薪重算金额'),
-              ),
-            ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _categoryCtrl,
-            decoration: const InputDecoration(
-              labelText: '分类（如人工/材料/餐饮）',
-              prefixIcon: Icon(Icons.category),
-            ),
-          ),
-          const SizedBox(height: 16),
-          ListTile(
-            title: Text('日期：${df.format(_date)}'),
-            trailing: const Icon(Icons.calendar_today),
-            onTap: _pickDate,
-          ),
-          ListTile(
-            title: Text('时间：${tf.format(_date)}'),
-            trailing: const Icon(Icons.access_time),
-            onTap: _pickTime,
-          ),
-          const Divider(),
-          const Text('工时'),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 600), // 限制最大宽度，适配平板/电脑
+          child: ListView(
+            padding: const EdgeInsets.all(16),
             children: [
-              ActionChip(
-                label: const Text('半工 (4h)'),
-                onPressed: () => _setDuration(4),
+              if (_loadingProjects)
+                const LinearProgressIndicator()
+              else if (_projects.isEmpty)
+                ListTile(
+                  title: const Text('暂无项目，请先创建',
+                      style: TextStyle(color: Colors.red)),
+                  trailing: TextButton(
+                    onPressed: () async {
+                      final result = await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => const ProjectListPage()));
+                      _loadProjects(); // 返回后刷新
+                    },
+                    child: const Text('去创建'),
+                  ),
+                )
+              else
+                DropdownButtonFormField<int>(
+                  value: _selectedProjectId,
+                  decoration: const InputDecoration(
+                    labelText: '所属项目',
+                    prefixIcon: Icon(Icons.folder),
+                    helperText: '必须选择一个项目',
+                  ),
+                  items: _projects
+                      .map((p) => DropdownMenuItem(
+                            value: p.id,
+                            child: Text(p.name),
+                          ))
+                      .toList(),
+                  onChanged: (val) {
+                    setState(() => _selectedProjectId = val);
+                    if (!_isEditing) _saveDraft();
+                  },
+                ),
+              const SizedBox(height: 16), // 增加间距
+
+              // 收入/支出切换 - 现代风格 Tab 切换
+              Container(
+                padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade200,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: () {
+                          setState(() => _billType = 'expense');
+                          if (!_isEditing) _saveDraft();
+                        },
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          decoration: BoxDecoration(
+                            color: _billType == 'expense'
+                                ? Colors.white
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: _billType == 'expense'
+                                ? [
+                                    BoxShadow(
+                                        color: Colors.black.withOpacity(0.05),
+                                        blurRadius: 4,
+                                        offset: const Offset(0, 2))
+                                  ]
+                                : null,
+                          ),
+                          child: Center(
+                            child: Text(
+                              '支出',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: _billType == 'expense'
+                                    ? Colors.red
+                                    : Colors.grey[600],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: () {
+                          setState(() => _billType = 'income');
+                          if (!_isEditing) _saveDraft();
+                        },
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          decoration: BoxDecoration(
+                            color: _billType == 'income'
+                                ? Colors.white
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: _billType == 'income'
+                                ? [
+                                    BoxShadow(
+                                        color: Colors.black.withOpacity(0.05),
+                                        blurRadius: 4,
+                                        offset: const Offset(0, 2))
+                                  ]
+                                : null,
+                          ),
+                          child: Center(
+                            child: Text(
+                              '收入',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: _billType == 'income'
+                                    ? Colors.green
+                                    : Colors.grey[600],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              ActionChip(
-                label: const Text('大工 (8h)'),
-                onPressed: () => _setDuration(8),
-              ),
-              ActionChip(
-                label: const Text('加班 (+1h)'),
-                onPressed: () => _incDuration(1),
-              ),
-              ActionChip(
-                label: const Text('清零'),
-                onPressed: () => _setDuration(0),
-              ),
-            ],
-          ),
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(
-              _duration > 0 ? '当前工时：$_duration 小时' : '未设置工时',
-              style: const TextStyle(color: Colors.grey),
-            ),
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _hourlyRateCtrl,
-            keyboardType:
-                const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(
-              labelText: '时薪（元/小时）',
-              prefixIcon: Icon(Icons.payments_outlined),
-            ),
-          ),
-          const Divider(),
-          const Text('工人'),
-          const SizedBox(height: 8),
-          DropdownButtonFormField<String>(
-            initialValue: _selectedWorker,
-            items: [
-              const DropdownMenuItem(value: null, child: Text('未选择')),
-              ..._workers
-                  .map((w) => DropdownMenuItem(value: w, child: Text(w)))
-                  .toList(),
-            ],
-            onChanged: (val) {
-              setState(() {
-                _selectedWorker = val;
-                if (val != null) _customWorker = null;
-              });
-            },
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            decoration: const InputDecoration(
-              labelText: '自定义工人姓名',
-              prefixIcon: Icon(Icons.person),
-            ),
-            onChanged: (value) {
-              setState(() {
-                _customWorker = value;
-                if (value.isNotEmpty) _selectedWorker = null;
-              });
-            },
-          ),
-          const Divider(),
-          TextField(
-            controller: _payMethodCtrl,
-            decoration: const InputDecoration(
-              labelText: '支付方式（现金/微信/支付宝/银行）',
-              prefixIcon: Icon(Icons.payment),
-            ),
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _noteCtrl,
-            maxLines: 3,
-            decoration: const InputDecoration(
-              labelText: '备注',
-              prefixIcon: Icon(Icons.note),
-            ),
-          ),
-          const SizedBox(height: 16),
-          ElevatedButton.icon(
-            onPressed: _submitting ? null : _submit,
-            icon: _submitting
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.save),
-            label: Text(_submitting ? '保存中...' : '保存'),
-          ),
-          const SizedBox(height: 24),
-          const Divider(),
-          const Text('语音助手'),
-          const SizedBox(height: 8),
-          GestureDetector(
-            onLongPressStart: (_) => _startSpeech(),
-            onLongPressEnd: (_) => _stopSpeech(),
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.blue.shade50,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
+              const SizedBox(height: 24),
+
+              // 日期选择 - 更轻量的设计
+              Row(
                 children: [
-                  const Icon(Icons.mic, color: Colors.blue),
-                  const SizedBox(width: 12),
                   Expanded(
-                    child: Text(
-                      '按住说话（状态：$_speechStatus）\n示例："张师傅今天大工，8小时"',
-                      style: const TextStyle(fontSize: 14),
+                    child: TextFormField(
+                      readOnly: true,
+                      controller: TextEditingController(text: df.format(_date)),
+                      decoration: const InputDecoration(
+                        labelText: '日期',
+                        prefixIcon: Icon(Icons.calendar_today),
+                        suffixIcon: Icon(Icons.arrow_drop_down),
+                      ),
+                      onTap: _pickDate,
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: TextFormField(
+                      readOnly: true,
+                      controller: TextEditingController(text: tf.format(_date)),
+                      decoration: const InputDecoration(
+                        labelText: '时间',
+                        prefixIcon: Icon(Icons.access_time),
+                        suffixIcon: Icon(Icons.arrow_drop_down),
+                      ),
+                      onTap: _pickTime,
                     ),
                   ),
                 ],
               ),
-            ),
+              const SizedBox(height: 24),
+              const Divider(),
+              const SizedBox(height: 24),
+
+              // 1. 姓名 - 第一个
+              TextField(
+                controller: _nameCtrl,
+                style: const TextStyle(fontSize: 16),
+                decoration: const InputDecoration(
+                  labelText: '姓名',
+                  prefixIcon: Icon(Icons.person),
+                  hintText: '输入工人姓名',
+                ),
+                onChanged: (v) {
+                  if (!_isEditing) _saveDraft();
+                },
+              ),
+              const SizedBox(height: 24),
+
+              // 2. 时薪 - 第二个
+              TextField(
+                  controller: _hourlyRateCtrl,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(fontSize: 16),
+                  decoration: const InputDecoration(
+                      labelText: '时薪（元/小时）',
+                      prefixIcon: Icon(Icons.payments_outlined))),
+              const SizedBox(height: 24),
+
+              // 3. 工时 - 第三个
+              TextField(
+                controller: _durationCtrl,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                style: const TextStyle(fontSize: 16),
+                decoration: const InputDecoration(
+                  labelText: '工时（小时）',
+                  prefixIcon: Icon(Icons.timer),
+                  hintText: '输入工时，如：8',
+                ),
+              ),
+              const SizedBox(height: 24),
+
+              // 4. 支付方式 - 第四个
+              DropdownButtonFormField<String>(
+                value: _selectedPayMethod,
+                decoration: const InputDecoration(
+                  labelText: '支付方式',
+                  prefixIcon: Icon(Icons.payment),
+                ),
+                items: _payMethods
+                    .map((method) => DropdownMenuItem(
+                          value: method,
+                          child: Text(method,
+                              style: const TextStyle(fontSize: 16)),
+                        ))
+                    .toList(),
+                onChanged: (val) {
+                  setState(() => _selectedPayMethod = val ?? '现金');
+                  if (!_isEditing) _saveDraft();
+                },
+              ),
+              // 如果选择"其他"，显示自定义输入框
+              if (_selectedPayMethod == '其他')
+                Padding(
+                  padding: const EdgeInsets.only(top: 16),
+                  child: TextField(
+                    controller: _customPayMethodCtrl,
+                    style: const TextStyle(fontSize: 16),
+                    decoration: const InputDecoration(
+                      labelText: '自定义支付方式',
+                      hintText: '请输入支付方式',
+                      prefixIcon: Icon(Icons.edit),
+                    ),
+                    onChanged: (v) {
+                      if (!_isEditing) _saveDraft();
+                    },
+                  ),
+                ),
+              const SizedBox(height: 24),
+
+              // 5. 金额 - 倒数第二个
+              TextField(
+                controller: _amountCtrl,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.red), // 金额突出显示
+                decoration: const InputDecoration(
+                    labelText: '金额（元）', prefixIcon: Icon(Icons.attach_money)),
+              ),
+              if (_calcExplanation != null)
+                Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text('基于 $_calcExplanation 自动计算',
+                        style: const TextStyle(
+                            color: Colors.green, fontSize: 14))),
+              if (_duration > 0)
+                Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                        onPressed: () => _maybeRecalculateAmount(force: true),
+                        icon: const Icon(Icons.calculate_outlined),
+                        label: const Text('重算金额'))),
+              const SizedBox(height: 24),
+
+              // 6. 备注 - 最后一个
+              TextField(
+                  controller: _noteCtrl,
+                  maxLines: 3,
+                  style: const TextStyle(fontSize: 16),
+                  decoration: const InputDecoration(
+                      labelText: '备注', prefixIcon: Icon(Icons.note))),
+              const SizedBox(height: 32),
+
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: _submitting ? null : _submit,
+                  icon: const Icon(Icons.save),
+                  label: Text(_submitting ? '保存中...' : '保存'),
+                ),
+              ),
+              const SizedBox(height: 32),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
-}
-
-class _SpeechParseResult {
-  final String? worker;
-  final double? durationHours;
-  final double? hourlyRate;
-  final double? amount;
-  final DateTime? startDateTime;
-
-  const _SpeechParseResult({
-    this.worker,
-    this.durationHours,
-    this.hourlyRate,
-    this.amount,
-    this.startDateTime,
-  });
-}
-
-class _RateParseResult {
-  final double value;
-  final String matchedRaw;
-
-  const _RateParseResult({
-    required this.value,
-    required this.matchedRaw,
-  });
 }

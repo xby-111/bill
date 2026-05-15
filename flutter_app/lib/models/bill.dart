@@ -6,6 +6,9 @@ class Bill {
   /// 账单唯一标识 (创建时为 null，由后端生成)
   final int? id;
   
+  /// 账单名称（替代 worker 字段）
+  final String? name;
+  
   /// 金额 (单位: 元)
   final double amount;
   
@@ -21,9 +24,6 @@ class Bill {
   /// 备注信息 (可选)
   final String? note;
   
-  /// 工人姓名 (可选，用于记录临时工)
-  final String? worker;
-  
   /// 工作时长，单位: 小时 (可选)
   final double? durationHours;
   
@@ -32,6 +32,9 @@ class Bill {
   
   /// 支付方式: '现金'、'微信'、'支付宝'、'银行转账' (可选)
   final String? payMethod;
+  
+  /// 项目 ID (可选，账单可归属到某个项目)
+  final int? projectId;
   
   /// 所属用户 ID
   final int? userId;
@@ -44,15 +47,16 @@ class Bill {
 
   Bill({
     this.id,
+    this.name,
     required this.amount,
     required this.billType,
     required this.category,
     required this.date,
     this.note,
-    this.worker,
     this.durationHours,
     this.payMethod,
     this.hourlyRate,
+    this.projectId,
     this.userId,
     this.createdAt,
     this.updatedAt,
@@ -62,12 +66,12 @@ class Bill {
   factory Bill.fromJson(Map<String, dynamic> json) {
     return Bill(
       id: json['id'] as int?,
+      name: json['name'] as String?,
       amount: (json['amount'] as num).toDouble(),
       billType: json['bill_type'] as String,
       category: json['category'] as String,
-      date: DateTime.parse(json['date'] as String),
+      date: DateTime.parse(json['date'] as String).toLocal(), // 转换为本地时间显示
       note: json['note'] as String?,
-      worker: json['worker'] as String?,
       durationHours: json['duration_hours'] != null
           ? (json['duration_hours'] as num).toDouble()
           : null,
@@ -75,12 +79,13 @@ class Bill {
           ? (json['hourly_rate'] as num).toDouble()
           : null,
       payMethod: json['pay_method'] as String?,
+      projectId: json['project_id'] as int?,
       userId: json['user_id'] as int?,
       createdAt: json['created_at'] != null
-          ? DateTime.parse(json['created_at'] as String)
+          ? DateTime.parse(json['created_at'] as String).toLocal() // 转换为本地时间
           : null,
       updatedAt: json['updated_at'] != null
-          ? DateTime.parse(json['updated_at'] as String)
+          ? DateTime.parse(json['updated_at'] as String).toLocal() // 转换为本地时间
           : null,
     );
   }
@@ -89,15 +94,16 @@ class Bill {
   /// 只包含创建账单所需的字段
   Map<String, dynamic> toJson() {
     return {
+      'name': name ?? '未命名账单',  // name 是后端必填字段，提供默认值
       'amount': amount,
       'bill_type': billType,
       'category': category,
-      'date': date.toIso8601String(),
+      'date': date.toUtc().toIso8601String(), // 转换为UTC时间发送
       if (note != null) 'note': note,
-      if (worker != null) 'worker': worker,
       if (durationHours != null) 'duration_hours': durationHours,
       if (hourlyRate != null) 'hourly_rate': hourlyRate,
       if (payMethod != null) 'pay_method': payMethod,
+      if (projectId != null) 'project_id': projectId,  // 创建时必填，但旧数据可能为null
     };
   }
 
@@ -105,30 +111,32 @@ class Bill {
   /// 常用于更新账单时保留未修改的字段
   Bill copyWith({
     int? id,
+    String? name,
     double? amount,
     String? billType,
     String? category,
     DateTime? date,
     String? note,
-    String? worker,
     double? durationHours,
     double? hourlyRate,
     String? payMethod,
+    int? projectId,
     int? userId,
     DateTime? createdAt,
     DateTime? updatedAt,
   }) {
     return Bill(
       id: id ?? this.id,
+      name: name ?? this.name,
       amount: amount ?? this.amount,
       billType: billType ?? this.billType,
       category: category ?? this.category,
       date: date ?? this.date,
       note: note ?? this.note,
-      worker: worker ?? this.worker,
       durationHours: durationHours ?? this.durationHours,
       hourlyRate: hourlyRate ?? this.hourlyRate,
       payMethod: payMethod ?? this.payMethod,
+      projectId: projectId ?? this.projectId,
       userId: userId ?? this.userId,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
@@ -136,45 +144,91 @@ class Bill {
   }
 }
 
+/// 账单历史记录模型
+class BillHistory {
+  final int id;
+  final int billId;
+  final String operationType; // 'UPDATE' or 'DELETE'
+  final DateTime operatedAt;
+  
+  // 历史快照数据
+  final String? name;
+  final double amount;
+  final String billType;
+  final String category;
+  final DateTime date;
+  final String? note;
+
+  BillHistory({
+    required this.id,
+    required this.billId,
+    required this.operationType,
+    required this.operatedAt,
+    this.name,
+    required this.amount,
+    required this.billType,
+    required this.category,
+    required this.date,
+    this.note,
+  });
+
+  factory BillHistory.fromJson(Map<String, dynamic> json) {
+    return BillHistory(
+      id: json['id'] as int,
+      billId: json['bill_id'] as int,
+      operationType: json['operation_type'] as String,
+      operatedAt: DateTime.parse(json['operated_at'] as String).toLocal(), // 转换为本地时间
+      name: json['name'] as String?,
+      amount: (json['amount'] as num).toDouble(),
+      billType: json['bill_type'] as String,
+      category: json['category'] as String,
+      date: DateTime.parse(json['date'] as String).toLocal(), // 转换为本地时间
+      note: json['note'] as String?,
+    );
+  }
+}
 
 /// 账单更新模型
 /// 
 /// 用于 PUT /bills/{id} 接口，所有字段均为可选
 /// 只需传入需要修改的字段
 class BillUpdate {
+  final String? name; // Added name
   final double? amount;
   final String? billType;
   final String? category;
   final DateTime? date;
   final String? note;
-  final String? worker;
   final double? durationHours;
   final double? hourlyRate;
   final String? payMethod;
+  final int? projectId;
 
   BillUpdate({
+    this.name, // Added name
     this.amount,
     this.billType,
     this.category,
     this.date,
     this.note,
-    this.worker,
     this.durationHours,
     this.hourlyRate,
     this.payMethod,
+    this.projectId,
   });
 
   Map<String, dynamic> toJson() {
     final map = <String, dynamic>{};
+    if (name != null) map['name'] = name; // Added name
     if (amount != null) map['amount'] = amount;
     if (billType != null) map['bill_type'] = billType;
     if (category != null) map['category'] = category;
-    if (date != null) map['date'] = date!.toIso8601String();
+    if (date != null) map['date'] = date!.toUtc().toIso8601String(); // 转换为UTC时间发送
     if (note != null) map['note'] = note;
-    if (worker != null) map['worker'] = worker;
     if (durationHours != null) map['duration_hours'] = durationHours;
     if (hourlyRate != null) map['hourly_rate'] = hourlyRate;
     if (payMethod != null) map['pay_method'] = payMethod;
+    if (projectId != null) map['project_id'] = projectId;
     return map;
   }
 }
@@ -243,13 +297,13 @@ class CategoryStatistics {
 }
 
 
-/// 工人统计模型
+/// 名称统计模型
 /// 
-/// 对应 GET /bills/statistics/worker 接口响应
-/// 用于统计每个工人的工作情况
-class WorkerStatistics {
-  /// 工人姓名
-  final String worker;
+/// 对应 GET /bills/statistics/name 接口响应
+/// 用于统计每个账单名称/人员的工作情况
+class NameStatistics {
+  /// 账单名称/人员姓名
+  final String name;
   
   /// 累计工作时长 (小时)
   final double totalHours;
@@ -260,16 +314,16 @@ class WorkerStatistics {
   /// 账单记录数
   final int billCount;
 
-  WorkerStatistics({
-    required this.worker,
+  NameStatistics({
+    required this.name,
     required this.totalHours,
     required this.totalAmount,
     required this.billCount,
   });
 
-  factory WorkerStatistics.fromJson(Map<String, dynamic> json) {
-    return WorkerStatistics(
-      worker: json['worker'] as String,
+  factory NameStatistics.fromJson(Map<String, dynamic> json) {
+    return NameStatistics(
+      name: json['name'] as String,
       totalHours: (json['total_hours'] as num).toDouble(),
       totalAmount: (json['total_amount'] as num).toDouble(),
       billCount: json['bill_count'] as int,

@@ -1,0 +1,1 @@
+30 3 * * * /root/bill/scripts/backup_db.sh >> /root/backups/backup.log 2>&1

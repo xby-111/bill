@@ -1,236 +1,63 @@
-# 🏠 家庭工时记账系统 (Family Work Ledger)
+# 🏠 家庭工时记账系统
 
-一个专为家庭设计的工时与账单记录系统，帮助父母轻松记录临时工人的工作情况（如装修工人、保洁阿姨、维修师傅等）。
+> 专为家庭设计的工时与账单记录系统
 
-> **技术栈**：FastAPI (Python) 后端 + Flutter 移动端
+**技术栈**: FastAPI (Python) + Flutter 移动端 + PostgreSQL/SQLite
 
----
+## 🚀 快速启动
+
+```bash
+# 1. 激活虚拟环境
+venv\Scripts\activate
+
+# 2. 启动后端服务
+python main.py
+
+# 3. 访问 API 文档
+# http://localhost:8000/docs
+```
+
+## ✨ 功能特性
+
+- 📝 账单记录与分类管理
+- 🎤 语音输入 (自动识别人员/工时/金额)
+- 📷 OCR 拍照识别
+- 🤖 AI 智能解析 (DeepSeek)
+- 📊 统计图表分析
+- 📂 项目分组管理
+- 🕓 历史版本回溯
 
 ## 📁 项目结构
 
 ```
 bill/
-├── 📂 后端 (FastAPI + SQLite)
-│   ├── main.py                 # 🚀 FastAPI 应用入口
-│   ├── requirements.txt        # Python 依赖
-│   ├── data.db                 # SQLite 数据库（运行后生成）
-│   ├── db/
-│   │   ├── database.py         # 数据库连接配置
-│   │   └── init_db.py          # 表初始化
-│   ├── models/
-│   │   ├── user.py             # 用户 ORM 模型
-│   │   └── bill.py             # 账单 ORM 模型
-│   ├── schemas/
-│   │   ├── user.py             # 用户 Pydantic 模式
-│   │   └── bill.py             # 账单 Pydantic 模式
-│   ├── routers/
-│   │   ├── auth.py             # 认证路由 (注册/登录)
-│   │   └── bills.py            # 账单路由 (CRUD/统计/导出)
-│   ├── services/
-│   │   ├── auth_service.py     # 认证业务逻辑
-│   │   └── bill_service.py     # 账单业务逻辑
-│   └── utils/
-│       └── jwt.py              # JWT 工具
-│
-└── 📂 flutter_app/ (Flutter 移动端)
-    ├── pubspec.yaml            # Flutter 依赖配置
-    ├── android/
-    │   └── app/src/main/
-    │       └── AndroidManifest.xml  # Android 权限配置
-    ├── ios/
-    │   └── Runner/
-    │       └── Info.plist      # iOS 权限配置
-    └── lib/
-        ├── main.dart           # 🚀 Flutter 入口
-        ├── config/
-        │   └── app_config.dart # API 地址等常量配置
-        ├── models/
-        │   └── bill.dart       # Dart 数据模型
-        ├── services/
-        │   └── api_service.dart # HTTP API 调用封装
-        └── pages/
-            └── add_bill_page.dart # 记工时页面
+├── config/           # 配置文件
+├── db/               # 数据库层
+├── models/           # ORM 模型
+├── schemas/          # Pydantic 模式
+├── routers/          # API 路由
+├── services/         # 业务逻辑
+├── utils/            # 工具函数
+├── tests/            # 测试文件
+├── flutter_app/      # Flutter 客户端
+├── docker/           # 容器化配置
+└── docs/             # 用户文档
 ```
 
----
+## 📖 文档
 
-## ✨ 功能特色
-
-| 功能 | 说明 |
+| 文档 | 说明 |
 |------|------|
-| 📝 **账单记录** | 记录金额、分类、日期、备注 |
-| 👷 **工人管理** | 记录工人姓名、工作时长、支付方式 |
-| 🎤 **语音输入** | 长按说话，自动识别工人、时间、工时 |
-| 🤖 **智能计算** | 自动抽取时薪/工时并计算总金额，表单预填充 |
-| 📊 **统计分析** | 按月/按分类/按工人汇总 |
-| 📤 **CSV 导出** | 导出账单到 Excel |
-| 🔐 **多用户** | 支持家庭成员各自登录 |
+| [用户指南](docs/README.md) | 完整使用说明、API 接口、配置指南 |
+| [开发者指南](DEVELOPER_GUIDE.md) | 架构设计、性能优化、代码结构 |
+| [Flutter 客户端](flutter_app/README.md) | 移动端开发说明 |
+| [许可证](docs/LICENSE) | AGPL v3.0 |
 
----
+## 🗄️ 数据库
 
-## 🚀 快速开始
+支持多种数据库：
+- **SQLite** - 本地开发 (零配置)
+- **PostgreSQL** - 生产环境
+- **MySQL** - 可选支持
 
-### 1️⃣ 启动后端
-
-```powershell
-# 进入项目根目录
-cd d:\Projects\bill
-
-# 创建虚拟环境（首次）
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-# 安装依赖
-pip install -r requirements.txt
-
-# 启动服务
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-后端启动后访问：
-- **API 文档**：http://127.0.0.1:8000/docs
-- **健康检查**：http://127.0.0.1:8000/health
-
-### 2️⃣ 配置 Flutter
-
-```powershell
-# 进入 Flutter 目录
-cd d:\Projects\bill\flutter_app
-
-# 获取依赖
-flutter pub get
-
-# 修改 API 地址（重要！）
-# 编辑 lib/config/app_config.dart
-# 将 apiBaseUrl 改为你电脑的局域网 IP
-```
-
-### 3️⃣ 运行 Flutter 应用
-
-```powershell
-# 连接手机或启动模拟器后
-flutter run
-```
-
----
-
-## 📋 账单字段说明
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `amount` | float | ✅ | 金额（元） |
-| `bill_type` | string | ✅ | `income` 或 `expense` |
-| `category` | string | ✅ | 分类：人工/材料/餐饮等 |
-| `date` | datetime | ✅ | 日期 + 具体时分秒 |
-| `worker` | string | ❌ | 工人姓名 |
-| `duration_hours` | float | ❌ | 工作时长（小时） |
-| `hourly_rate` | float | ❌ | 时薪单价（元/小时） |
-| `pay_method` | string | ❌ | 支付方式 |
-| `note` | string | ❌ | 备注 |
-
----
-
-## 📡 API 接口
-
-### 认证
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/auth/register` | 注册 |
-| POST | `/auth/login` | 登录 |
-| GET | `/auth/me` | 当前用户 |
-
-### 账单
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/bills/` | 创建账单 |
-| GET | `/bills/` | 账单列表 |
-| GET | `/bills/{id}` | 单个账单 |
-| PUT | `/bills/{id}` | 更新 |
-| DELETE | `/bills/{id}` | 删除 |
-
-### 统计
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/bills/statistics/monthly` | 月度统计 |
-| GET | `/bills/statistics/category` | 分类统计 |
-| GET | `/bills/statistics/worker` | 工人统计 |
-| GET | `/bills/export` | 导出 CSV |
-
----
-
-## 🎤 语音识别示例
-
-长按"语音助手"按钮说：
-
-> "张师傅今天大工，8小时"
-
-系统会自动识别：
-- 工人：张师傅
-- 工时：8 小时
-
-支持的语音关键词：
-- **工时**：半工(4h)、大工(8h)、加班、X小时
-- **工人**：预设名单、或“XX师傅/阿姨/叔叔”等称谓
-
----
-
-## 🧠 智能语音解析 & 自动计算
-
-- **时间点提取**：识别“下午1点”“早上8:30”等自然语言时间，并与所选日期合并，精确到分钟。
-- **时薪/总价推导**：解析“每小时30块”“30块钱一个工时”等表达；当同时识别出时薪与工时后，自动计算金额并在表单中标注“30元/h × 4h”。
-- **乱序容错**：无论说“王五 3小时 120块”还是“120块给王五干了3小时”，都能映射到正确字段。
-- **人工校验**：语音结束后仅预填表单，不直接提交；同时在备注中追加 `[语音原文] ...` 方便再次核对。
-
-**高级示例**
-
-> “王五是下午1点来的，干了4个小时，说好30块钱一个工时。”
-
-解析结果：
-
-| 字段 | 解析值 |
-|------|--------|
-| Worker | 王五 |
-| Date | 2025-11-30 13:00:00 |
-| Duration | 4.0 小时 |
-| Hourly Rate | 30.0 元/h |
-| Amount | 120.0 元（自动计算） |
-| Note | [语音原文] … + [语音推断] 基于 30元/h × 4h |
-
----
-
-## ⚙️ 配置说明
-
-### Flutter API 地址配置
-
-编辑 `flutter_app/lib/config/app_config.dart`：
-
-```dart
-static const String apiBaseUrl = 'http://192.168.1.100:8000';
-//                                ^^^^^^^^^^^^^^
-//                                改为你电脑的局域网 IP
-```
-
-查看电脑 IP：
-```powershell
-ipconfig | Select-String "IPv4"
-```
-
-### Android 权限（已配置）
-
-- `INTERNET` - 网络访问
-- `RECORD_AUDIO` - 麦克风（语音识别）
-
-### iOS 权限（已配置）
-
-- `NSMicrophoneUsageDescription` - 麦克风
-- `NSSpeechRecognitionUsageDescription` - 语音识别
-
----
-
-## 📄 许可证
-
-MIT License
-
----
-
-**Made with ❤️ for families**
+当前部署：华为云 PostgreSQL

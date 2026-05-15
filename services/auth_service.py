@@ -1,39 +1,87 @@
 from sqlalchemy.orm import Session
-from fastapi import HTTPException, status
 from models.user import User
 from schemas.user import UserCreate, UserLogin
-from passlib.context import CryptContext
+from utils.exceptions import AppException, UnauthorizedException, ConflictException
+import bcrypt
+import re
 from datetime import timedelta
 from utils.jwt import create_access_token
+from config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+def validate_password_strength(password: str) -> tuple[bool, str]:
+    """
+    验证密码强度
+    
+    要求：
+    - 至少 6 个字符
+    
+    Returns:
+        (is_valid, error_message)
+    """
+    # 家庭使用场景，只要求最少6个字符
+    if len(password) < 6:
+        return False, "密码长度至少为 6 个字符"
+    
+    return True, ""
 
-def get_password_hash(password):
-    return pwd_context.hash(password)
 
-def get_user_by_username(db: Session, username: str):
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """验证密码"""
+    return bcrypt.checkpw(
+        plain_password.encode('utf-8'), 
+        hashed_password.encode('utf-8')
+    )
+
+
+def get_password_hash(password: str) -> str:
+    """生成密码哈希"""
+    return bcrypt.hashpw(
+        password.encode('utf-8'), 
+        bcrypt.gensalt()
+    ).decode('utf-8')
+
+
+def get_user_by_username(db: Session, username: str) -> User | None:
+    """根据用户名查询用户"""
     return db.query(User).filter(User.username == username).first()
 
-def get_user_by_email(db: Session, email: str):
+
+def get_user_by_email(db: Session, email: str) -> User | None:
+    """根据邮箱查询用户"""
     return db.query(User).filter(User.email == email).first()
 
-def create_user(db: Session, user: UserCreate):
+
+def create_user(db: Session, user: UserCreate) -> User:
+    """
+    创建新用户
+    
+    Args:
+        db: 数据库会话
+        user: 用户创建数据
+        
+    Returns:
+        创建的用户对象
+        
+    Raises:
+        AppException: 密码强度不足
+        ConflictException: 用户名或邮箱已存在
+    """
+    # 验证密码强度
+    is_valid, error_msg = validate_password_strength(user.password)
+    if not is_valid:
+        raise AppException(
+            message=error_msg,
+            error_code="WEAK_PASSWORD"
+        )
+    
     db_user = get_user_by_username(db, username=user.username)
     if db_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="用户名已存在"
-        )
+        raise ConflictException("用户名已存在")
     
     db_user = get_user_by_email(db, email=user.email)
     if db_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="邮箱已存在"
-        )
+        raise ConflictException("邮箱已存在")
     
     hashed_password = get_password_hash(user.password)
     db_user = User(
@@ -46,7 +94,17 @@ def create_user(db: Session, user: UserCreate):
     db.refresh(db_user)
     return db_user
 
-def authenticate_user(db: Session, user: UserLogin):
+def authenticate_user(db: Session, user: UserLogin) -> User | bool:
+    """
+    验证用户凭据
+    
+    Args:
+        db: 数据库会话
+        user: 登录信息
+        
+    Returns:
+        验证成功返回用户对象，否则返回 False
+    """
     db_user = get_user_by_username(db, username=user.username)
     if not db_user:
         return False
@@ -54,15 +112,25 @@ def authenticate_user(db: Session, user: UserLogin):
         return False
     return db_user
 
-def login_user(db: Session, user: UserLogin):
+
+def login_user(db: Session, user: UserLogin) -> dict:
+    """
+    用户登录
+    
+    Args:
+        db: 数据库会话
+        user: 登录信息
+        
+    Returns:
+        包含 access_token 和 token_type 的字典
+        
+    Raises:
+        UnauthorizedException: 用户名或密码错误
+    """
     db_user = authenticate_user(db, user)
     if not db_user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户名或密码错误",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    access_token_expires = timedelta(minutes=30)
+        raise UnauthorizedException("用户名或密码错误")
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": db_user.username}, expires_delta=access_token_expires
     )

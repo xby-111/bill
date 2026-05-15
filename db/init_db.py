@@ -4,7 +4,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db.database import Base, engine
 from models.user import User
-from models.bill import Bill
+from models.bill import Bill, BillHistory
+from models.project import Project
 
 def create_tables():
     Base.metadata.create_all(bind=engine)

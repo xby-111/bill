@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  # 数据库服务：PostgreSQL
+  db:
+    image: postgres:15-alpine
+    container_name: bill_db_prod
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-ComplexPass123!}
+      POSTGRES_DB: ${DB_NAME:-family_ledger}
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # 后端 API 服务
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: bill_api_prod
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8000"
+    environment:
+      DB_TYPE: postgresql
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-ComplexPass123!}
+      DB_NAME: ${DB_NAME:-family_ledger}
+      SECRET_KEY: ${SECRET_KEY:-ChangeThisToARealSecretInProduction}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      DEBUG: "false"
+      TOKEN_EXPIRE_MINUTES: 10080
+      CORS_ORIGINS: "*"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # Nginx - 托管 PWA 静态文件 + 反向代理 API
+  web:
+    image: nginx:alpine
+    container_name: bill_web_prod
+    restart: always
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../flutter_app/build/web:/usr/share/nginx/html:ro
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+volumes:
+  postgres_data_prod:
+    driver: local
